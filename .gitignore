@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Secrets and local settings
+.env
+
+# Uploaded photos (the folder itself is kept)
+uploaded_images/*
+!uploaded_images/.gitkeep
+
+# Training data and the trained model (large files)
+training/dataset/
+backend/model/*.keras
+backend/model/class_names.json
+
+# Flutter
+frontend/build/
+frontend/.dart_tool/
+frontend/.flutter-plugins*
+frontend/.packages
+*.log

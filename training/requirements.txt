@@ -1,0 +1,3 @@
+# Same packages as the backend (TensorFlow, Pillow, numpy, ...) plus scikit-learn for the evaluation report.
+-r ../backend/requirements.txt
+scikit-learn>=1.4
