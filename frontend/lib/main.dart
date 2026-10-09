@@ -4,6 +4,7 @@ import 'core/theme.dart';
 import 'providers/providers.dart';
 import 'screens/home_shell.dart';
 import 'screens/login_screen.dart';
+import 'widgets/common.dart';
 
 void main() {
   runApp(const ProviderScope(child: KopraGradeApp()));
@@ -26,7 +27,7 @@ class KopraGradeApp extends ConsumerWidget {
     final auth = ref.watch(authProvider);
     final Widget home;
     if (auth.initializing) {
-      home = const Scaffold(body: Center(child: CircularProgressIndicator()));
+      home = const _Splash();
     } else if (auth.user == null) {
       home = const LoginScreen();
     } else {
@@ -39,6 +40,32 @@ class KopraGradeApp extends ConsumerWidget {
       navigatorKey: _navigatorKey,
       theme: buildTheme(),
       home: home,
+    );
+  }
+}
+
+/// Shown for a moment while a saved login is being checked.
+class _Splash extends StatelessWidget {
+  const _Splash();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: KopraColors.forest,
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            BrandMark(onDark: true, size: 56),
+            SizedBox(height: 28),
+            SizedBox(
+              height: 28,
+              width: 28,
+              child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

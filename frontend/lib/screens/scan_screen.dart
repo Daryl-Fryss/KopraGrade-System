@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/api_client.dart';
 import '../core/config.dart';
 import '../core/frame_steadiness.dart';
+import '../core/theme.dart';
 import '../core/validators.dart';
 import '../providers/providers.dart';
 import '../widgets/common.dart';
@@ -17,7 +18,7 @@ enum _Phase { starting, ready, capturing, grading, blocked }
 /// Phones only: live camera with a scanning frame, like a QR scanner.
 ///
 /// When the camera is held steady over something, it takes ONE photo and sends it to the
-/// same grading endpoint as "Upload Photo" (GradingService.upload -> POST /api/classification/predict).
+/// same grading endpoint as "Upload Image" (GradingService.upload -> POST /api/classification/predict).
 /// The backend model does the grading. The Capture button is always there as a fallback.
 class ScanScreen extends ConsumerStatefulWidget {
   const ScanScreen({super.key});
@@ -32,6 +33,12 @@ class _ScanScreenState extends ConsumerState<ScanScreen> with WidgetsBindingObse
   final _detector = SteadinessDetector();
   CameraController? _controller;
   _Phase _phase = _Phase.starting;
+
+  // Camera choice and flashlight. The torch is only offered on a rear camera, and only outside the
+  // browser (the web camera plugin cannot switch a torch on), so unsupported devices never see it.
+  List<CameraDescription> _cameras = const [];
+  CameraLensDirection _lens = CameraLensDirection.back;
+  bool _torchOn = false;
 
   // Goes up every time the camera is stopped or started, so a slow start that finishes
   // late can notice it is out of date and clean up after itself.
@@ -105,13 +112,15 @@ class _ScanScreenState extends ConsumerState<ScanScreen> with WidgetsBindingObse
       final cameras = await availableCameras();
       if (!mounted || epoch != _epoch) return;
       if (cameras.isEmpty) {
-        _block('No camera was found on this device. You can upload a photo instead.', canRetry: false);
+        _block('No camera was found on this device. You can upload an image instead.', canRetry: false);
         return;
       }
+      _cameras = cameras;
       final camera = cameras.firstWhere(
-        (c) => c.lensDirection == CameraLensDirection.back,
+        (c) => c.lensDirection == _lens,
         orElse: () => cameras.first,
       );
+      _lens = camera.lensDirection;
       controller = CameraController(
         camera,
         ResolutionPreset.high,
@@ -126,7 +135,10 @@ class _ScanScreenState extends ConsumerState<ScanScreen> with WidgetsBindingObse
       }
       _controller = controller;
       controller = null; // from here on _controller owns it
-      setState(() => _phase = _Phase.ready);
+      setState(() {
+        _phase = _Phase.ready;
+        _torchOn = false; // a new camera always starts with the flashlight off
+      });
       if (!pauseAuto) await _startStream();
     } on CameraException catch (e) {
       await _disposeQuietly(controller);
@@ -137,7 +149,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> with WidgetsBindingObse
     } catch (_) {
       await _disposeQuietly(controller);
       if (mounted && epoch == _epoch) {
-        _block('The camera could not be started. Please try again, or upload a photo instead.');
+        _block('The camera could not be started. Please try again, or upload an image instead.');
       }
     }
   }
@@ -178,15 +190,15 @@ class _ScanScreenState extends ConsumerState<ScanScreen> with WidgetsBindingObse
     if (code.contains('withoutprompt')) {
       return (
         message: 'Camera access is turned off for KopraGrade. Turn it on in your phone settings, '
-            'or upload a photo instead.',
+            'or upload an image instead.',
         canRetry: true,
       );
     }
     if (code.contains('restricted')) {
-      return (message: 'Camera access is restricted on this device. You can upload a photo instead.', canRetry: false);
+      return (message: 'Camera access is restricted on this device. You can upload an image instead.', canRetry: false);
     }
     if (code.contains('denied') || code.contains('permission') || code.contains('notallowed')) {
-      return (message: 'Camera permission is required for scanning. You can also upload a photo instead.', canRetry: true);
+      return (message: 'Camera permission is required for scanning. You can also upload an image instead.', canRetry: true);
     }
     if (code.contains('notreadable') || code.contains('inuse')) {
       return (
@@ -195,16 +207,16 @@ class _ScanScreenState extends ConsumerState<ScanScreen> with WidgetsBindingObse
       );
     }
     if (code.contains('notfound') || code.contains('nocamera')) {
-      return (message: 'No camera was found on this device. You can upload a photo instead.', canRetry: false);
+      return (message: 'No camera was found on this device. You can upload an image instead.', canRetry: false);
     }
     if (code.contains('security')) {
       return (
-        message: 'The browser only allows the camera on a secure (HTTPS) page. You can upload a photo instead.',
+        message: 'The browser only allows the camera on a secure (HTTPS) page. You can upload an image instead.',
         canRetry: false,
       );
     }
     return (
-      message: 'The camera could not be started. Please try again, or upload a photo instead.',
+      message: 'The camera could not be started. Please try again, or upload an image instead.',
       canRetry: true,
     );
   }
@@ -282,12 +294,12 @@ class _ScanScreenState extends ConsumerState<ScanScreen> with WidgetsBindingObse
     }
     if (bytes.length > AppConfig.maxImageBytes) {
       _requestInFlight = false;
-      await _backToReady('The photo is too large (max 5 MB). Try Upload Photo instead.', pauseAuto: true);
+      await _backToReady('The image is too large (max 5 MB). Try Upload Image instead.', pauseAuto: true);
       return;
     }
     if (mounted) setState(() => _phase = _Phase.grading);
 
-    // Same call as the Upload Photo screen: the backend runs the real model and saves one history record.
+    // Same call as the Upload Image screen: the backend runs the real model and saves one history record.
     int? gradingId;
     ApiException? failure;
     try {
@@ -333,7 +345,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> with WidgetsBindingObse
     }
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => ResultScreen(gradingId: gradingId, againLabel: 'Scan Again'),
+        builder: (_) => ResultScreen(gradingId: gradingId, source: ResultSource.scan),
       ),
     );
     _resultOpen = false;
@@ -341,21 +353,60 @@ class _ScanScreenState extends ConsumerState<ScanScreen> with WidgetsBindingObse
     await _startCamera(); // "Scan Again": a fresh start, nothing carried over
   }
 
+  // ------------------------------------------------- flashlight + camera switch
+
+  bool get _torchAvailable => !kIsWeb && _lens == CameraLensDirection.back;
+
+  bool get _canSwitchCamera {
+    final other = _lens == CameraLensDirection.back ? CameraLensDirection.front : CameraLensDirection.back;
+    return _cameras.any((c) => c.lensDirection == other);
+  }
+
+  Future<void> _toggleTorch() async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized || _phase != _Phase.ready) return;
+    final next = !_torchOn;
+    try {
+      await controller.setFlashMode(next ? FlashMode.torch : FlashMode.off);
+      if (mounted) {
+        setState(() {
+          _torchOn = next;
+          _banner = null;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _torchOn = false;
+          _banner = 'The flashlight is not available on this camera.';
+        });
+      }
+    }
+  }
+
+  Future<void> _switchCamera() async {
+    if (_phase != _Phase.ready || _requestInFlight || !_canSwitchCamera) return;
+    _lens = _lens == CameraLensDirection.back ? CameraLensDirection.front : CameraLensDirection.back;
+    await _releaseCamera();
+    if (!mounted) return;
+    unawaited(_startCamera());
+  }
+
   // ------------------------------------------------------------------- UI
 
   String _statusText() {
     return switch (_phase) {
-      _Phase.starting => 'Starting camera...',
-      _Phase.capturing => 'Capturing...',
-      _Phase.grading => 'Grading...',
+      _Phase.starting => 'Starting camera... Allow camera access if your phone asks.',
+      _Phase.capturing => 'Capturing image...',
+      _Phase.grading => 'Processing image...',
       _Phase.blocked => '',
       _Phase.ready => !_autoAvailable
-          ? 'Tap Capture when the copra is inside the frame.'
+          ? 'Tap the green button when the copra is inside the frame.'
           : _autoPaused
-              ? 'Auto-scan is paused. Tap Capture to try again.'
+              ? 'Auto-scan is paused. Tap the green button to try again.'
               : _reading.progress > 0
                   ? 'Hold steady...'
-                  : 'Hold the camera steady over the copra, or tap Capture.',
+                  : 'Hold the camera steady over the copra, or tap the green button.',
     };
   }
 
@@ -363,7 +414,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> with WidgetsBindingObse
   Widget build(BuildContext context) {
     final busy = _phase == _Phase.capturing || _phase == _Phase.grading;
     return PopScope(
-      canPop: !busy, // do not walk away in the middle of a grading request
+      canPop: !busy, // do not walk away in the middle of a classification request
       child: Scaffold(
         backgroundColor: Colors.black,
         appBar: AppBar(title: const Text('Scan Copra')),
@@ -375,28 +426,51 @@ class _ScanScreenState extends ConsumerState<ScanScreen> with WidgetsBindingObse
   }
 
   Widget _buildBlocked(BuildContext context) {
+    final theme = Theme.of(context);
     return ColoredBox(
-      color: Theme.of(context).scaffoldBackgroundColor,
-      child: ResponsiveBody(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.no_photography_outlined, size: 64, color: Theme.of(context).colorScheme.outline),
-              const SizedBox(height: 16),
-              Text(_blockedMessage, textAlign: TextAlign.center),
-              const SizedBox(height: 24),
-              if (_canRetry) ...[
-                FilledButton(onPressed: () => unawaited(_startCamera()), child: const Text('Try again')),
-                const SizedBox(height: 12),
-              ],
-              OutlinedButton(
-                onPressed: () => Navigator.of(context).pop(), // back to the screen that has Upload Photo
-                child: const Text('Upload a photo instead'),
+      color: KopraColors.page,
+      child: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: ResponsiveBody(
+            child: KCard(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 84,
+                      height: 84,
+                      decoration: const BoxDecoration(color: KopraColors.amberTint, shape: BoxShape.circle),
+                      child: const Icon(Icons.no_photography_outlined, size: 40, color: KopraColors.amber),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Text('Camera not available', textAlign: TextAlign.center, style: theme.textTheme.titleLarge),
+                  const SizedBox(height: 8),
+                  Text(_blockedMessage, textAlign: TextAlign.center, style: theme.textTheme.bodyMedium),
+                  const SizedBox(height: 22),
+                  if (_canRetry) ...[
+                    FilledButton.icon(
+                      onPressed: () {
+                        _lens = CameraLensDirection.back; // a failed camera switch must not trap the user
+                        unawaited(_startCamera());
+                      },
+                      icon: const Icon(Icons.refresh_rounded),
+                      label: const Text('Try again'),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+                  OutlinedButton.icon(
+                    onPressed: () => Navigator.of(context).pop(), // back to the screen that has Upload Image
+                    icon: const Icon(Icons.upload_file_rounded),
+                    label: const Text('Upload an image instead'),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),
@@ -410,78 +484,207 @@ class _ScanScreenState extends ConsumerState<ScanScreen> with WidgetsBindingObse
 
     return LayoutBuilder(
       builder: (context, box) {
-        final side = math.min(box.maxWidth, box.maxHeight) * 0.7;
+        final side = math.min(box.maxWidth, box.maxHeight) * 0.68;
         final frame = Rect.fromCenter(
-          center: Offset(box.maxWidth / 2, box.maxHeight * 0.40),
+          center: Offset(box.maxWidth / 2, box.maxHeight * 0.43),
           width: side,
           height: side,
         );
         return Stack(
           fit: StackFit.expand,
           children: [
-            if (showPreview) _CameraFill(controller: controller),
+            if (showPreview) _CameraFill(controller: controller!),
             IgnorePointer(
               child: CustomPaint(
                 painter: _FramePainter(
                   frame: frame,
-                  color: _reading.progress > 0 ? Colors.greenAccent : Colors.white,
+                  color: _reading.progress > 0 ? KopraColors.freshLight : Colors.white,
                 ),
               ),
             ),
+            // How to position the copra
             Positioned(
               top: 12,
               left: 16,
               right: 16,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(8)),
-                child: const Text(
-                  'Place one copra sample inside the frame.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white, fontSize: 16),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xD9174D36),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: const Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Place one copra sample inside the frame',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      'Use good daylight and hold the phone steady.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.white70, fontSize: 13),
+                    ),
+                  ],
                 ),
               ),
             ),
+            // Status, flashlight, capture and camera switch
             Positioned(
-              left: 24,
-              right: 24,
-              bottom: 24,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_banner != null) ...[ErrorBanner(_banner!), const SizedBox(height: 12)],
-                  Text(
-                    _statusText(),
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.white, fontSize: 15),
-                  ),
-                  if (_autoAvailable && !_autoPaused && _reading.progress > 0) ...[
-                    const SizedBox(height: 8),
-                    LinearProgressIndicator(
-                      value: _reading.progress,
-                      minHeight: 6,
-                      color: Colors.greenAccent,
-                      backgroundColor: Colors.white24,
-                      borderRadius: BorderRadius.circular(3),
+              left: 16,
+              right: 16,
+              bottom: 16,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                decoration: BoxDecoration(
+                  color: const Color(0xD9174D36),
+                  borderRadius: BorderRadius.circular(22),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_banner != null) ...[ErrorBanner(_banner!), const SizedBox(height: 12)],
+                    Semantics(
+                      liveRegion: true,
+                      child: Text(
+                        _statusText(),
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white, fontSize: 15),
+                      ),
+                    ),
+                    if (_autoAvailable && !_autoPaused && _reading.progress > 0) ...[
+                      const SizedBox(height: 8),
+                      LinearProgressIndicator(
+                        value: _reading.progress,
+                        minHeight: 6,
+                        color: KopraColors.freshLight,
+                        backgroundColor: Colors.white24,
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ],
+                    const SizedBox(height: 14),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        if (_torchAvailable)
+                          _RoundControl(
+                            icon: _torchOn ? Icons.flash_on_rounded : Icons.flash_off_rounded,
+                            label: _torchOn ? 'Turn flashlight off' : 'Turn flashlight on',
+                            active: _torchOn,
+                            onPressed: canCapture ? () => unawaited(_toggleTorch()) : null,
+                          )
+                        else
+                          const SizedBox(width: 56, height: 56),
+                        _CaptureButton(onPressed: canCapture ? () => unawaited(_capture()) : null),
+                        if (_canSwitchCamera)
+                          _RoundControl(
+                            icon: Icons.cameraswitch_rounded,
+                            label: 'Switch camera',
+                            active: false,
+                            onPressed: canCapture ? () => unawaited(_switchCamera()) : null,
+                          )
+                        else
+                          const SizedBox(width: 56, height: 56),
+                      ],
                     ),
                   ],
-                  const SizedBox(height: 12),
-                  FilledButton.icon(
-                    onPressed: canCapture ? () => unawaited(_capture()) : null,
-                    icon: const Icon(Icons.camera_alt),
-                    label: const Text('Capture'),
-                  ),
-                ],
+                ),
               ),
             ),
             if (busy)
-              const ColoredBox(
-                color: Colors.black54,
-                child: Center(child: CircularProgressIndicator(color: Colors.white)),
+              ColoredBox(
+                color: const Color(0xB3000000),
+                child: Center(
+                  child: Semantics(
+                    liveRegion: true,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+                      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const CircularProgressIndicator(),
+                          const SizedBox(height: 16),
+                          Text(
+                            _phase == _Phase.grading ? 'Processing image...' : 'Capturing image...',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               ),
           ],
         );
       },
+    );
+  }
+}
+
+/// Round flashlight / camera-switch button.
+class _RoundControl extends StatelessWidget {
+  const _RoundControl({required this.icon, required this.label, required this.active, required this.onPressed});
+  final IconData icon;
+  final String label;
+  final bool active;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onPressed != null;
+    return Tooltip(
+      message: label,
+      child: Opacity(
+        opacity: enabled ? 1 : 0.5,
+        child: Material(
+          color: active ? KopraColors.soft : Colors.white24,
+          shape: const CircleBorder(),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: onPressed,
+            child: SizedBox(
+              width: 56,
+              height: 56,
+              child: Icon(icon, color: active ? KopraColors.forest : Colors.white, size: 28),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The big round capture button.
+class _CaptureButton extends StatelessWidget {
+  const _CaptureButton({required this.onPressed});
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onPressed != null;
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: 'Capture photo',
+      child: GestureDetector(
+        onTap: onPressed,
+        child: Opacity(
+          opacity: enabled ? 1 : 0.5,
+          child: Container(
+            width: 80,
+            height: 80,
+            padding: const EdgeInsets.all(5),
+            decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 4)),
+            child: Container(
+              decoration: const BoxDecoration(color: KopraColors.fresh, shape: BoxShape.circle),
+              child: const Icon(Icons.camera_alt_rounded, color: Colors.white, size: 32),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

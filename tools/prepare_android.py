@@ -1,4 +1,4 @@
-"""Patches the Flutter-generated Android project so KopraGrade works on a real phone.
+"""Patches the Flutter-generated Android project so KopraGrade works on a real phone
 Safe to run many times. Usage: python tools/prepare_android.py http://192.168.1.10:8000
 """
 import re

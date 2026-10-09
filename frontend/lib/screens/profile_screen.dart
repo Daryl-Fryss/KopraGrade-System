@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/api_client.dart';
+import '../core/theme.dart';
 import '../core/validators.dart';
 import '../providers/providers.dart';
 import '../widgets/common.dart';
@@ -52,85 +53,103 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     }
   }
 
-  Future<void> _logout() async {
-    final sure = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Log out?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(
-            style: FilledButton.styleFrom(minimumSize: const Size(88, 40)),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Log out'),
-          ),
-        ],
-      ),
-    );
-    if (sure == true) await ref.read(authProvider.notifier).logout();
-  }
-
   @override
   Widget build(BuildContext context) {
     final user = ref.watch(authProvider).user;
     if (user == null) return const SizedBox.shrink();
+    final theme = Theme.of(context);
 
     return ResponsiveBody(
+      maxWidth: 720,
       child: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: pagePadding(context),
         children: [
-          Card(
-            child: Column(
+          KCard(
+            child: Row(
               children: [
-                ListTile(
-                  leading: const Icon(Icons.email_outlined),
-                  title: const Text('Email'),
-                  subtitle: Text(user.email),
-                ),
-                ListTile(
-                  leading: Icon(user.isFarmer ? Icons.agriculture : Icons.storefront),
-                  title: const Text('Account type'),
-                  subtitle: Text(user.isFarmer ? 'Farmer' : 'Buyer'),
+                InitialAvatar(user.name, size: 60),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(user.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.titleLarge),
+                      const SizedBox(height: 2),
+                      Text(user.email, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodyMedium),
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(color: KopraColors.soft, borderRadius: BorderRadius.circular(20)),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(user.isFarmer ? Icons.agriculture : Icons.storefront, size: 16, color: KopraColors.forest),
+                            const SizedBox(width: 6),
+                            Text(
+                              user.isFarmer ? 'Farmer account' : 'Buyer account',
+                              style: const TextStyle(color: KopraColors.forest, fontWeight: FontWeight.w700, fontSize: 13),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
           ),
           const SizedBox(height: 16),
-          Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (_error != null) ...[ErrorBanner(_error!), const SizedBox(height: 12)],
-                if (_message != null) ...[
-                  Text(_message!, style: TextStyle(color: Theme.of(context).colorScheme.primary)),
-                  const SizedBox(height: 12),
+          KCard(
+            padding: const EdgeInsets.all(20),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('Edit your details', style: theme.textTheme.titleLarge),
+                  const SizedBox(height: 16),
+                  if (_error != null) ...[ErrorBanner(_error!), const SizedBox(height: 12)],
+                  if (_message != null) ...[
+                    NoticeBanner(_message!, kind: NoticeKind.success),
+                    const SizedBox(height: 12),
+                  ],
+                  TextFormField(
+                    controller: _name,
+                    textCapitalization: TextCapitalization.words,
+                    decoration: const InputDecoration(labelText: 'Full name', prefixIcon: Icon(Icons.person_outline)),
+                    validator: validateName,
+                  ),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: _contact,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(
+                      labelText: 'Contact info (optional)',
+                      prefixIcon: Icon(Icons.phone_outlined),
+                    ),
+                    validator: validateContact,
+                  ),
+                  const SizedBox(height: 20),
+                  FilledButton(
+                    onPressed: _busy ? null : _save,
+                    child: _busy
+                        ? const SizedBox(
+                            height: 22,
+                            width: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
+                          )
+                        : const Text('Save changes'),
+                  ),
                 ],
-                TextFormField(
-                  controller: _name,
-                  textCapitalization: TextCapitalization.words,
-                  decoration: const InputDecoration(labelText: 'Full name', prefixIcon: Icon(Icons.person_outline)),
-                  validator: validateName,
-                ),
-                const SizedBox(height: 16),
-                TextFormField(
-                  controller: _contact,
-                  keyboardType: TextInputType.phone,
-                  decoration: const InputDecoration(labelText: 'Contact info (optional)', prefixIcon: Icon(Icons.phone_outlined)),
-                  validator: validateContact,
-                ),
-                const SizedBox(height: 20),
-                FilledButton(
-                  onPressed: _busy ? null : _save,
-                  child: _busy
-                      ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('Save changes'),
-                ),
-              ],
+              ),
             ),
           ),
-          const SizedBox(height: 24),
-          OutlinedButton.icon(onPressed: _logout, icon: const Icon(Icons.logout), label: const Text('Log out')),
+          const SizedBox(height: 16),
+          OutlinedButton.icon(
+            onPressed: () => confirmLogout(context, ref),
+            icon: const Icon(Icons.logout_rounded),
+            label: const Text('Log out'),
+          ),
         ],
       ),
     );
